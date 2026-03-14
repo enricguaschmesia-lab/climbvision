@@ -23,10 +23,6 @@ python scripts/download_models.py
 python scripts/run_analysis.py --video path/to/climb.mp4 --output output/
 ```
 
-## Development
-
-This project uses a multi-agent architecture with Claude Code as the orchestrator. See `CLAUDE.md` for the full development guide, and `docs/phase_plan.md` for the implementation roadmap.
-
 ```bash
 pytest tests/ -v          # Run tests
 ```
