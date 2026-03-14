@@ -1,2 +1,64 @@
-*.md
-!README.md
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.egg-info/
+dist/
+build/
+.eggs/
+
+# Virtual environments
+venv/
+.venv/
+env/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# Internal docs and agent instructions
+agents/
+docs/
+
+# AI tool workspaces
+.claude/
+.gemini/
+.codex/
+
+# Temp files
+tmp/
+/tmp/
+
+# Data — model weights (all formats)
+data/models/
+
+# Data — sample/test videos
+data/samples/
+
+# All video files (anywhere in the repo)
+*.mp4
+*.MP4
+*.avi
+*.AVI
+*.mov
+*.MOV
+*.mkv
+*.MKV
+*.webm
+*.WEBM
+
+# Output
+output/
+
+# Pytest temp
+.pytest_tmp/
+.pytest_cache/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Config overrides (local only)
+configs/local.yaml

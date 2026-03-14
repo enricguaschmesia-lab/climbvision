@@ -1,0 +1,53 @@
+# ClimbVision — Technique Error Detection Rules
+# Each rule has: phases where it applies, detection logic parameters, severity
+
+errors:
+  bent_arms_at_rest:
+    description: "Elbows significantly bent during rest/stabilization phases"
+    phases: ["rest", "stabilization"]
+    severity: "warning"
+    params:
+      max_elbow_angle: 150          # degrees — below this = bent
+      both_arms_required: false      # true = both must be bent, false = either
+    feedback: "Straighten your arms when resting to use bone structure instead of muscle."
+
+  hips_far_from_wall:
+    description: "Hips too far from the wall during static phases"
+    phases: ["rest", "stabilization", "preparation"]
+    severity: "warning"
+    params:
+      max_hip_distance_ratio: 0.3   # × shoulder width
+    feedback: "Bring your hips closer to the wall to load weight onto your feet."
+
+  chicken_wing:
+    description: "Elbow flared outward during reaching phase"
+    phases: ["reaching"]
+    severity: "info"
+    params:
+      max_elbow_lateral_angle: 45   # degrees from vertical
+    feedback: "Keep your elbow close to your body when reaching to improve shoulder engagement."
+
+  trex_arms:
+    description: "Not fully extending reaching arm before pulling up"
+    phases: ["reaching"]
+    severity: "warning"
+    params:
+      min_reach_ratio: 0.7          # reached distance / arm length
+    feedback: "Extend your arm fully before initiating the pull — reach first, then move your body."
+
+  feet_unweighted:
+    description: "Insufficient weight on feet during static phases"
+    phases: ["rest", "stabilization", "preparation"]
+    severity: "warning"
+    params:
+      min_foot_force_ratio: 0.3     # minimum combined foot force as fraction of body weight
+    feedback: "Push more through your feet. Most of your weight should be on your legs."
+
+  barn_dooring:
+    description: "Body swinging open with contacts only on one side"
+    phases: ["reaching", "stabilization"]
+    severity: "error"
+    params:
+      lateral_velocity_threshold: 15  # px/frame for rapid lateral CoM movement
+      max_same_side_contacts: 2       # all contacts on same side of body midline
+    feedback: "Use a flag or backstep to prevent your body from swinging open."

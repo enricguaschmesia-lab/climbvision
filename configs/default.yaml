@@ -1,0 +1,89 @@
+# ClimbVision Default Configuration
+# All tunable parameters in one place. No magic numbers in code.
+
+pose:
+  model: "mediapipe"                    # "mediapipe" | "yolov8" | "auto"
+  model_path: "data/models/pose_landmarker_heavy.task"  # MediaPipe Tasks API model
+  min_confidence: 0.5                   # Frames below this are flagged
+  smoothing: "savgol"                   # "savgol" | "kalman" | "none"
+  smoothing_window: 7                   # Savitzky-Golay window (must be odd)
+  smoothing_polyorder: 2                # Savitzky-Golay polynomial order
+  max_interpolation_gap: 5              # Max consecutive missing frames to interpolate
+
+holds:
+  detection_method: "yolo"              # "yolo" | "color" | "manual"
+  yolo_model_path: "data/models/yolov8n-holds.pt"
+  yolo_confidence: 0.3                  # Min detection confidence
+  min_hold_area: 100                    # Min pixel area for a hold
+  color_ranges:                         # HSV hue ranges for color classification
+    red_low: [0, 10]
+    red_high: [170, 180]
+    orange: [10, 25]
+    yellow: [25, 40]
+    green: [40, 80]
+    blue: [90, 130]
+    purple: [130, 170]
+    # Black/white detected by saturation/value, not hue
+
+calibration:
+  method: "none"                        # "tnut" | "manual" | "none"
+  known_distance_m: null                # For manual method
+  tnut_spacing_cm: 15                   # Standard T-nut hole spacing
+
+analysis:
+  gender: "male"                        # "male" | "female" — affects De Leva mass fractions
+  climber_mass_kg: 70                   # Default, override per session
+  velocity_threshold: 5.0               # px/frame for motion detection
+  min_motion_frames: 3                  # Consecutive frames to confirm motion
+  min_static_frames: 5                  # Consecutive frames to confirm static
+  contact_radius: 40                    # px proximity for hold contact
+  contact_velocity_threshold: 3.0       # Max velocity to count as "on hold"
+  min_contact_frames: 3                 # Consecutive frames to confirm contact
+  friction_coefficient: 0.7             # Default for rubber on plastic holds
+
+overlay:
+  skeleton:
+    thickness: 2
+    color: [0, 255, 128]               # BGR: bright green
+    joint_radius: 4
+    low_confidence_alpha: 0.3
+    low_confidence_threshold: 0.5       # Visibility below this is rendered faded
+  angles:
+    arc_radius: 30
+    font_scale: 0.4
+    efficient_color: [0, 200, 0]       # BGR: green
+    warning_color: [0, 200, 255]       # BGR: yellow
+    error_color: [0, 0, 255]           # BGR: red
+    efficient_range: [150, 180]        # degrees (for elbow at rest)
+    warning_range: [90, 150]
+  com:
+    dot_radius: 8
+    dot_color: [0, 180, 255]           # BGR: orange
+    trail_length: 30                   # frames
+    trail_color: [0, 140, 255]         # BGR: darker orange
+    trail_thickness: 2
+  force:
+    arrow_scale: 0.5
+    max_arrow_length: 100              # px
+    low_force_color: [0, 200, 0]       # BGR: green
+    high_force_color: [0, 0, 255]      # BGR: red
+  phase_bar:
+    height: 30
+    colors:
+      rest: [200, 200, 200]            # Gray
+      preparation: [255, 200, 0]       # Cyan-ish
+      reaching: [0, 140, 255]          # Orange
+      stabilization: [200, 100, 0]     # Blue-ish
+  hud:
+    font_scale: 0.6
+    background_alpha: 0.5
+    position: "top_right"              # "top_right" | "top_left" | "bottom_right"
+
+video:
+  output_codec: "mp4v"
+  output_fps: null                     # null = match input fps
+  max_dimension: 1920                  # Downscale if larger
+
+report:
+  template: "src/visualization/templates/report.html"
+  chart_library: "plotly"              # "plotly" | "matplotlib"
