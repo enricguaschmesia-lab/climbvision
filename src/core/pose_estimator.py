@@ -88,6 +88,14 @@ class PoseEstimator:
         self._smoothing_window: int = config.get("smoothing_window", 7)
         self._smoothing_polyorder: int = config.get("smoothing_polyorder", 2)
         self._max_gap: int = config.get("max_interpolation_gap", 5)
+        self._frame_counter: int = 0
+
+        model_name = config.get("model", "mediapipe")
+        if model_name != "mediapipe":
+            raise ValueError(
+                "Only 'mediapipe' pose backend is supported in Phase 1. "
+                "YOLOv8 planned for Phase 3."
+            )
 
         self._model_path: str = config.get("model_path", _DEFAULT_MODEL_PATH)
         if not Path(self._model_path).exists():
@@ -98,22 +106,11 @@ class PoseEstimator:
 
         # Deferred import — only fails here, not at module load
         self._mp = _import_mediapipe()
-        _BaseOptions = self._mp.tasks.BaseOptions
-        _PoseLandmarker = self._mp.tasks.vision.PoseLandmarker
-        _PoseLandmarkerOptions = self._mp.tasks.vision.PoseLandmarkerOptions
         _RunningMode = self._mp.tasks.vision.RunningMode
 
         # IMAGE mode landmarker — for single frame estimation
-        self._image_landmarker = _PoseLandmarker.create_from_options(
-            _PoseLandmarkerOptions(
-                base_options=_BaseOptions(model_asset_path=self._model_path),
-                running_mode=_RunningMode.IMAGE,
-                num_poses=1,
-                min_pose_detection_confidence=self.min_confidence,
-                min_pose_presence_confidence=self.min_confidence,
-                min_tracking_confidence=self.min_confidence,
-            )
-        )
+        self._image_landmarker = self._create_landmarker(_RunningMode.IMAGE)
+        self._video_landmarker = self._create_landmarker(_RunningMode.VIDEO)
 
     def estimate_frame(self, frame: np.ndarray) -> tuple[np.ndarray | None, float]:
         """Estimate pose keypoints for a single BGR frame.
@@ -147,7 +144,10 @@ class PoseEstimator:
         """Process a sequence of frames with tracking, smoothing, and gap interpolation.
 
         Uses VIDEO mode for temporal tracking across frames, then applies
-        gap interpolation and Savitzky-Golay smoothing.
+        gap interpolation and Savitzky-Golay smoothing. This method keeps
+        VIDEO-mode state across calls: timestamps are derived from a
+        persistent frame counter, and the landmarker retains its internal
+        tracking state until ``reset()`` or ``close()`` is called.
 
         Args:
             frames: List of BGR images as numpy arrays.
@@ -171,39 +171,20 @@ class PoseEstimator:
             raise ValueError(f"fps must be positive, got {fps}")
 
         mp = self._mp
-        _BaseOptions = mp.tasks.BaseOptions
-        _PoseLandmarker = mp.tasks.vision.PoseLandmarker
-        _PoseLandmarkerOptions = mp.tasks.vision.PoseLandmarkerOptions
-        _RunningMode = mp.tasks.vision.RunningMode
-
-        # Create a fresh VIDEO mode landmarker per call — the Tasks API
-        # requires monotonically increasing timestamps, so we cannot reuse
-        # a stateful landmarker across multiple estimate_video() calls.
-        video_landmarker = _PoseLandmarker.create_from_options(
-            _PoseLandmarkerOptions(
-                base_options=_BaseOptions(model_asset_path=self._model_path),
-                running_mode=_RunningMode.VIDEO,
-                num_poses=1,
-                min_pose_detection_confidence=self.min_confidence,
-                min_pose_presence_confidence=self.min_confidence,
-                min_tracking_confidence=self.min_confidence,
-            )
-        )
 
         # Step 1: Estimate each frame using VIDEO mode (has tracking)
         raw_keypoints: list[np.ndarray | None] = []
         confidences: list[float] = []
-        try:
-            for idx, frame in enumerate(frames):
-                frame_rgb = frame[:, :, ::-1].copy()
-                mp_image = mp.Image(image_format=mp.ImageFormat.SRGB, data=frame_rgb)
-                timestamp_ms = int(idx * (1000.0 / fps))
-                result = video_landmarker.detect_for_video(mp_image, timestamp_ms)
-                kp, conf = self._parse_result(result, frame.shape[:2])
-                raw_keypoints.append(kp)
-                confidences.append(conf)
-        finally:
-            video_landmarker.close()
+        for idx, frame in enumerate(frames):
+            frame_rgb = frame[:, :, ::-1].copy()
+            mp_image = mp.Image(image_format=mp.ImageFormat.SRGB, data=frame_rgb)
+            timestamp_ms = int((self._frame_counter + idx) * (1000.0 / fps))
+            result = self._video_landmarker.detect_for_video(mp_image, timestamp_ms)
+            kp, conf = self._parse_result(result, frame.shape[:2])
+            raw_keypoints.append(kp)
+            confidences.append(conf)
+
+        self._frame_counter += len(frames)
 
         # Step 2: Interpolate short gaps
         interpolated = interpolate_gaps(raw_keypoints, max_gap=self._max_gap)
@@ -229,9 +210,29 @@ class PoseEstimator:
         """
         return list(MEDIAPIPE_LANDMARK_NAMES)
 
+    def reset(self) -> None:
+        """Reset VIDEO-mode tracking state for processing a new video.
+
+        Closes the current VIDEO-mode landmarker and creates a fresh one.
+        Resets the internal frame counter to zero so timestamps restart.
+        The IMAGE-mode landmarker is unaffected.
+        """
+        running_mode = self._mp.tasks.vision.RunningMode
+        self._video_landmarker.close()
+        self._video_landmarker = self._create_landmarker(running_mode.VIDEO)
+        self._frame_counter = 0
+
     def close(self) -> None:
-        """Release MediaPipe resources."""
-        self._image_landmarker.close()
+        """Release MediaPipe resources.
+
+        Safe to call multiple times; subsequent calls are no-ops.
+        """
+        if self._image_landmarker is not None:
+            self._image_landmarker.close()
+            self._image_landmarker = None
+        if self._video_landmarker is not None:
+            self._video_landmarker.close()
+            self._video_landmarker = None
 
     def __enter__(self) -> PoseEstimator:
         return self
@@ -268,3 +269,27 @@ class PoseEstimator:
 
         overall_confidence = float(keypoints[:, 3].mean())
         return keypoints, overall_confidence
+
+    def _create_landmarker(self, running_mode: object) -> object:
+        """Create a MediaPipe pose landmarker for the given running mode.
+
+        Args:
+            running_mode: A ``mediapipe.tasks.vision.RunningMode`` enum value
+                (IMAGE or VIDEO).
+
+        Returns:
+            A configured ``PoseLandmarker`` instance.
+        """
+        _BaseOptions = self._mp.tasks.BaseOptions
+        _PoseLandmarker = self._mp.tasks.vision.PoseLandmarker
+        _PoseLandmarkerOptions = self._mp.tasks.vision.PoseLandmarkerOptions
+        return _PoseLandmarker.create_from_options(
+            _PoseLandmarkerOptions(
+                base_options=_BaseOptions(model_asset_path=self._model_path),
+                running_mode=running_mode,
+                num_poses=1,
+                min_pose_detection_confidence=self.min_confidence,
+                min_pose_presence_confidence=self.min_confidence,
+                min_tracking_confidence=self.min_confidence,
+            )
+        )

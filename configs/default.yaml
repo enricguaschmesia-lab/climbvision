@@ -2,11 +2,12 @@
 # All tunable parameters in one place. No magic numbers in code.
 
 pose:
-  model: "mediapipe"                    # "mediapipe" | "yolov8" | "auto"
+  model: "mediapipe"                    # Only "mediapipe" supported in Phase 1. YOLOv8 planned for Phase 3.
   model_path: "data/models/pose_landmarker_heavy.task"  # MediaPipe Tasks API model
   min_confidence: 0.5                   # Frames below this are flagged
   smoothing: "savgol"                   # "savgol" | "kalman" | "none"
-  smoothing_window: 7                   # Savitzky-Golay window (must be odd)
+  smoothing_window: 7                   # Savitzky-Golay window (must be odd). Manual override; see smoothing_window_seconds.
+  smoothing_window_seconds: 0.23        # Auto-compute window from FPS (0.23s ≈ 7 frames at 30fps). Ignored if smoothing_window is set explicitly.
   smoothing_polyorder: 2                # Savitzky-Golay polynomial order
   max_interpolation_gap: 5              # Max consecutive missing frames to interpolate
 
@@ -32,7 +33,7 @@ calibration:
 
 analysis:
   gender: "male"                        # "male" | "female" — affects De Leva mass fractions
-  climber_mass_kg: 70                   # Default, override per session
+  climber_mass_kg: 75                   # Default, override per session
   velocity_threshold: 5.0               # px/frame for motion detection
   min_motion_frames: 3                  # Consecutive frames to confirm motion
   min_static_frames: 5                  # Consecutive frames to confirm static
@@ -48,6 +49,7 @@ overlay:
     joint_radius: 4
     low_confidence_alpha: 0.3
     low_confidence_threshold: 0.5       # Visibility below this is rendered faded
+    hide_threshold: 0.25                # Visibility below this: joint is NOT drawn at all (occlusion-aware)
   angles:
     arc_radius: 30
     font_scale: 0.4

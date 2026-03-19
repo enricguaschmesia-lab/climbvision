@@ -1,18 +1,18 @@
 """Tests for src/core/pose_estimator.py.
 
-Tests the PoseEstimator interface, landmark names, and context manager.
-Uses real MediaPipe inference on a synthetic image — no video file needed.
-
-Tests that require the model file are skipped if it's not available.
+Includes both real-model integration tests and mock-backed unit tests for
+configuration validation and VIDEO-mode lifecycle behavior.
 """
 
 from __future__ import annotations
 
 from pathlib import Path
+from types import SimpleNamespace
 
 import numpy as np
 import pytest
 
+import src.core.pose_estimator as pose_estimator_module
 from src.core.pose_estimator import MEDIAPIPE_LANDMARK_NAMES
 
 # Skip all model-dependent tests if model is absent
@@ -21,6 +21,11 @@ _HAS_MODEL = Path(_MODEL_PATH).exists()
 
 try:
     from src.core.pose_estimator import PoseEstimator
+except ImportError:
+    PoseEstimator = None
+
+try:
+    pose_estimator_module._import_mediapipe()
     _HAS_MEDIAPIPE = True
 except ImportError:
     _HAS_MEDIAPIPE = False
@@ -29,6 +34,129 @@ requires_model = pytest.mark.skipif(
     not (_HAS_MODEL and _HAS_MEDIAPIPE),
     reason="Requires mediapipe and pose model file",
 )
+
+
+class _FakeLandmark:
+    """Minimal fake MediaPipe landmark."""
+
+    def __init__(self, value: float) -> None:
+        self.x = value
+        self.y = value
+        self.z = value
+        self.visibility = 0.9
+
+
+class _FakeResult:
+    """Minimal fake MediaPipe detection result."""
+
+    def __init__(self, detected: bool = True) -> None:
+        if detected:
+            self.pose_landmarks = [[_FakeLandmark(i / 100.0) for i in range(33)]]
+        else:
+            self.pose_landmarks = []
+
+
+class _FakeBaseOptions:
+    """Fake MediaPipe BaseOptions."""
+
+    def __init__(self, model_asset_path: str) -> None:
+        self.model_asset_path = model_asset_path
+
+
+class _FakePoseLandmarkerOptions:
+    """Fake MediaPipe PoseLandmarkerOptions."""
+
+    def __init__(
+        self,
+        base_options: _FakeBaseOptions,
+        running_mode: str,
+        num_poses: int,
+        min_pose_detection_confidence: float,
+        min_pose_presence_confidence: float,
+        min_tracking_confidence: float,
+    ) -> None:
+        self.base_options = base_options
+        self.running_mode = running_mode
+        self.num_poses = num_poses
+        self.min_pose_detection_confidence = min_pose_detection_confidence
+        self.min_pose_presence_confidence = min_pose_presence_confidence
+        self.min_tracking_confidence = min_tracking_confidence
+
+
+class _FakePoseLandmarker:
+    """Fake MediaPipe PoseLandmarker that records timestamps."""
+
+    instances: list[_FakePoseLandmarker] = []
+
+    def __init__(self, options: _FakePoseLandmarkerOptions) -> None:
+        self.options = options
+        self.closed = False
+        self.video_timestamps: list[int] = []
+
+    @classmethod
+    def create_from_options(
+        cls,
+        options: _FakePoseLandmarkerOptions,
+    ) -> _FakePoseLandmarker:
+        instance = cls(options)
+        cls.instances.append(instance)
+        return instance
+
+    def detect(self, mp_image) -> _FakeResult:
+        return _FakeResult()
+
+    def detect_for_video(self, mp_image, timestamp_ms: int) -> _FakeResult:
+        self.video_timestamps.append(timestamp_ms)
+        return _FakeResult()
+
+    def close(self) -> None:
+        self.closed = True
+
+
+class _FakeImage:
+    """Fake MediaPipe image wrapper."""
+
+    def __init__(self, image_format: str, data: np.ndarray) -> None:
+        self.image_format = image_format
+        self.data = data
+
+
+@pytest.fixture
+def fake_pose_backend(monkeypatch) -> type[_FakePoseLandmarker]:
+    """Patch pose_estimator to use a fake MediaPipe backend."""
+    _FakePoseLandmarker.instances = []
+    fake_mp = SimpleNamespace(
+        Image=_FakeImage,
+        ImageFormat=SimpleNamespace(SRGB="SRGB"),
+        tasks=SimpleNamespace(
+            BaseOptions=_FakeBaseOptions,
+            vision=SimpleNamespace(
+                PoseLandmarker=_FakePoseLandmarker,
+                PoseLandmarkerOptions=_FakePoseLandmarkerOptions,
+                RunningMode=SimpleNamespace(IMAGE="IMAGE", VIDEO="VIDEO"),
+            ),
+        ),
+    )
+    monkeypatch.setattr(pose_estimator_module, "_import_mediapipe", lambda: fake_mp)
+    monkeypatch.setattr(pose_estimator_module.Path, "exists", lambda self: True)
+    return _FakePoseLandmarker
+
+
+@pytest.fixture
+def mock_estimator(fake_pose_backend: type[_FakePoseLandmarker]) -> PoseEstimator:
+    """Create a PoseEstimator backed by fake MediaPipe objects."""
+    config = {
+        "model": "mediapipe",
+        "model_path": "fake.task",
+        "min_confidence": 0.3,
+        "smoothing": "none",
+        "smoothing_window": 7,
+        "smoothing_polyorder": 2,
+        "max_interpolation_gap": 5,
+    }
+    est = PoseEstimator(config)
+    yield est
+    est.close()
 
 
 @pytest.fixture(scope="module")
@@ -52,6 +180,54 @@ def estimator():
 def _make_blank_frame(width: int = 640, height: int = 480) -> np.ndarray:
     """Create a blank BGR frame (no person visible)."""
     return np.zeros((height, width, 3), dtype=np.uint8)
+
+
+# ---------------------------------------------------------------------------
+# Tests — validation and VIDEO mode lifecycle (no model needed)
+# ---------------------------------------------------------------------------
+
+
+class TestValidationAndLifecycle:
+    """Tests for model validation and VIDEO-mode state management."""
+
+    def test_rejects_unsupported_model(self) -> None:
+        with pytest.raises(
+            ValueError,
+            match=(
+                "Only 'mediapipe' pose backend is supported in Phase 1. "
+                "YOLOv8 planned for Phase 3."
+            ),
+        ):
+            PoseEstimator({"model": "yolov8"})
+
+    def test_reset_restores_frame_counter(self, mock_estimator: PoseEstimator) -> None:
+        frames = [_make_blank_frame()]
+        mock_estimator.estimate_video(frames, fps=10.0)
+
+        old_video_landmarker = mock_estimator._video_landmarker
+        mock_estimator.reset()
+
+        assert mock_estimator._frame_counter == 0
+        assert old_video_landmarker.closed
+        assert mock_estimator._video_landmarker is not old_video_landmarker
+
+    def test_estimate_video_twice_increments_frame_counter(
+        self,
+        mock_estimator: PoseEstimator,
+    ) -> None:
+        frames = [_make_blank_frame() for _ in range(2)]
+        keypoints_1, confidences_1 = mock_estimator.estimate_video(frames, fps=10.0)
+        keypoints_2, confidences_2 = mock_estimator.estimate_video(
+            [_make_blank_frame()],
+            fps=10.0,
+        )
+
+        assert len(keypoints_1) == 2
+        assert len(confidences_1) == 2
+        assert len(keypoints_2) == 1
+        assert len(confidences_2) == 1
+        assert mock_estimator._frame_counter == 3
+        assert mock_estimator._video_landmarker.video_timestamps == [0, 100, 200]
 
 
 # ---------------------------------------------------------------------------
