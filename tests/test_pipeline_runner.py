@@ -115,7 +115,7 @@ class TestRunPosePass:
         monkeypatch.setattr(
             pipeline_runner_module,
             "compute_joint_angles",
-            lambda keypoints: {"marker": float(keypoints[0, 0])},
+            lambda keypoints, **kwargs: {"marker": float(keypoints[0, 0])},
         )
 
         result = run_pose_pass(
@@ -151,7 +151,7 @@ class TestRunPosePass:
         monkeypatch.setattr(
             pipeline_runner_module,
             "compute_joint_angles",
-            lambda keypoints: {"marker": float(keypoints[0, 0])},
+            lambda keypoints, **kwargs: {"marker": float(keypoints[0, 0])},
         )
 
         result = run_pose_pass(

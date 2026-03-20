@@ -5,7 +5,7 @@ pose:
   model: "mediapipe"                    # Only "mediapipe" supported in Phase 1. YOLOv8 planned for Phase 3.
   model_path: "data/models/pose_landmarker_heavy.task"  # MediaPipe Tasks API model
   min_confidence: 0.5                   # Frames below this are flagged
-  smoothing: "savgol"                   # "savgol" | "kalman" | "none"
+  smoothing: "savgol"                   # "savgol" | "none"
   smoothing_window: null                # null = adaptive (from smoothing_window_seconds × fps). Set to odd int for manual override.
   smoothing_window_seconds: 0.23        # Auto-compute window from FPS (0.23s ≈ 7 frames at 30fps). Ignored if smoothing_window is set explicitly.
   smoothing_polyorder: 2                # Savitzky-Golay polynomial order
@@ -54,19 +54,14 @@ overlay:
     low_confidence_threshold: 0.5       # Visibility below this is rendered faded
     hide_threshold: 0.25                # Visibility below this: joint is NOT drawn at all (occlusion-aware)
   angles:
-    arc_radius: 45                     # Default arc radius (px at 1080p)
-    radius_hips: 65                    # Larger radius for hips to avoid knee overlap
-    thickness: 3                       # Arc line thickness (1px more than skeleton)
-    font_scale: 0.55                   # Degree label font scale
-    alpha: 0.75                        # Arc opacity (0-1)
-    fill_alpha: 0.1                    # Sector fill opacity (light "pie slice")
-    label_offset: 18                   # Label distance from arc path (px)
-    hide_threshold: 0.25               # Skip arcs for joints below this visibility
     efficient_color: [60, 220, 60]     # BGR: neon green (high contrast on gym walls)
     warning_color: [0, 180, 255]       # BGR: golden amber
     error_color: [20, 20, 240]         # BGR: vivid red
     efficient_range: [150, 180]        # degrees — efficient (e.g. straight arm)
     warning_range: [90, 150]           # degrees — suboptimal
+    tracker_history_length: 15         # Frames of angle history for hold detection
+    tracker_stress_threshold: 90       # Angle (degrees) below which a joint is "stressed"
+    tracker_range_threshold: 10        # Max peak-to-peak range (degrees) to count as "holding"
   com:
     dot_radius: 8
     dot_color: [0, 180, 255]           # BGR: orange
@@ -85,11 +80,6 @@ overlay:
       preparation: [255, 200, 0]       # Cyan-ish
       reaching: [0, 140, 255]          # Orange
       stabilization: [200, 100, 0]     # Blue-ish
-  hud:
-    font_scale: 0.6
-    background_alpha: 0.5
-    position: "top_right"              # "top_right" | "top_left" | "bottom_right"
-
 video:
   output_codec: "mp4v"
   output_fps: null                     # null = match input fps

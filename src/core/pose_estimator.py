@@ -86,7 +86,7 @@ class PoseEstimator:
         self.config = config
         self.min_confidence: float = config.get("min_confidence", 0.5)
         self._smoothing_type: str = config.get("smoothing", "savgol")
-        self._smoothing_window: int | None = config.get("smoothing_window", 7)
+        self._smoothing_window: int | None = config.get("smoothing_window")
         self._smoothing_window_seconds: float = config.get("smoothing_window_seconds", 0.23)
         self._smoothing_polyorder: int = config.get("smoothing_polyorder", 2)
         self._max_gap: int = config.get("max_interpolation_gap", 5)

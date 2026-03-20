@@ -21,7 +21,11 @@ from src.core.pipeline_runner import (
 )
 from src.core.pose_estimator import PoseEstimator
 from src.analysis.joint_angles import compute_joint_angles, AngleTracker, JOINT_TRIPLETS
-from src.visualization.skeleton_overlay import render_skeleton, render_dynamic_hud
+from src.visualization.skeleton_overlay import (
+    compute_stress_colors,
+    render_skeleton,
+    render_dynamic_hud,
+)
 
 
 def _render_frame(
@@ -59,26 +63,10 @@ def _render_frame(
         return display_frame, False
 
     if joint_angles is None:
-        joint_angles = compute_joint_angles(kp)
+        joint_angles = compute_joint_angles(kp, min_visibility=0.3)
 
     events = angle_tracker.update(joint_angles)
-
-    stress_colors = {}
-    efficient_range = angles_cfg.get("efficient_range", [150, 180])
-    warning_range = angles_cfg.get("warning_range", [90, 150])
-    efficient_color = tuple(angles_cfg.get("efficient_color", [60, 220, 60]))
-    warning_color = tuple(angles_cfg.get("warning_color", [0, 180, 255]))
-    error_color = tuple(angles_cfg.get("error_color", [20, 20, 240]))
-    
-    for joint_name, angle in joint_angles.items():
-        if joint_name in JOINT_TRIPLETS:
-            idx_center = JOINT_TRIPLETS[joint_name][1]
-            if angle < warning_range[0]:
-                stress_colors[idx_center] = error_color
-            elif angle < efficient_range[0]:
-                stress_colors[idx_center] = warning_color
-            else:
-                stress_colors[idx_center] = efficient_color
+    stress_colors = compute_stress_colors(joint_angles, JOINT_TRIPLETS, angles_cfg)
 
     display_frame = render_skeleton(display_frame, kp, skeleton_cfg, stress_colors=stress_colors)
     display_frame = render_dynamic_hud(display_frame, events)
@@ -124,7 +112,11 @@ def main() -> None:
     smoothing_window = compute_adaptive_smoothing_window(meta.fps, config)
 
     # Initialize stateful tracker for dynamic HUD events
-    angle_tracker = AngleTracker()
+    angle_tracker = AngleTracker(
+        history_length=angles_cfg.get("tracker_history_length", 15),
+        range_threshold=angles_cfg.get("tracker_range_threshold", 10.0),
+        stress_threshold=angles_cfg.get("tracker_stress_threshold", 90.0),
+    )
 
     # Optional video writer
     writer = None
@@ -144,7 +136,6 @@ def main() -> None:
 
     detected = 0
     total = 0
-    quit_early = False
 
     if args.raw:
         print("Processing in raw (per-frame) mode...")
@@ -224,7 +215,6 @@ def main() -> None:
                 if args.show:
                     cv2.imshow("ClimbVision - Pose Test", display_frame)
                     if cv2.waitKey(1) & 0xFF == ord("q"):
-                        quit_early = True
                         break
         else:
             print(f"  Using in-memory smoothing path ({smoothing_window=})...")
@@ -277,7 +267,6 @@ def main() -> None:
                 if args.show:
                     cv2.imshow("ClimbVision - Pose Test", display_frame)
                     if cv2.waitKey(1) & 0xFF == ord("q"):
-                        quit_early = True
                         break
 
     if args.show:

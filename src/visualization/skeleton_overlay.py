@@ -65,6 +65,40 @@ DEFAULT_REGION_COLORS: dict[str, tuple[int, int, int]] = {
 }
 
 
+def compute_stress_colors(
+    joint_angles: dict[str, float],
+    joint_triplets: dict[str, tuple[int, int, int]],
+    angles_config: dict,
+) -> dict[int, tuple[int, int, int]]:
+    """Map joint angles to stress-level colors for skeleton rendering.
+
+    Args:
+        joint_angles: Joint name to angle in degrees.
+        joint_triplets: Joint name to (endpoint_a, center, endpoint_c) indices.
+        angles_config: The ``overlay.angles`` config section with range/color keys.
+
+    Returns:
+        Dictionary mapping landmark center index to a BGR color tuple.
+    """
+    efficient_range = angles_config.get("efficient_range", [150, 180])
+    warning_range = angles_config.get("warning_range", [90, 150])
+    efficient_color = tuple(angles_config.get("efficient_color", [60, 220, 60]))
+    warning_color = tuple(angles_config.get("warning_color", [0, 180, 255]))
+    error_color = tuple(angles_config.get("error_color", [20, 20, 240]))
+
+    stress_colors: dict[int, tuple[int, int, int]] = {}
+    for joint_name, angle in joint_angles.items():
+        if joint_name in joint_triplets:
+            idx_center = joint_triplets[joint_name][1]
+            if angle < warning_range[0]:
+                stress_colors[idx_center] = error_color
+            elif angle < efficient_range[0]:
+                stress_colors[idx_center] = warning_color
+            else:
+                stress_colors[idx_center] = efficient_color
+    return stress_colors
+
+
 def render_skeleton(
     frame: np.ndarray,
     keypoints: np.ndarray,
@@ -86,8 +120,7 @@ def render_skeleton(
             - joint_radius: int, dot radius in pixels
             - low_confidence_alpha: float, opacity for low-vis joints (0-1)
             - low_confidence_threshold: float, visibility below this is
-              considered low-confidence (defaults to min_confidence from
-              pose config or 0.5)
+              considered low-confidence (defaults to 0.5)
             - hide_threshold: float, visibility below this means the joint
               is NOT drawn at all (occlusion-aware). Defaults to 0.0
               (draw everything).
@@ -194,7 +227,7 @@ def render_dynamic_hud(
         Frame with dynamic HUD elements.
     """
     if not events:
-        return frame
+        return frame.copy()
         
     output = frame.copy()
     

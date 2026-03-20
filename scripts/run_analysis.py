@@ -10,11 +10,15 @@ from src.analysis.joint_angles import compute_joint_angles, AngleTracker, JOINT_
 from src.core.pipeline_runner import (
     compute_adaptive_smoothing_window,
     run_pose_pass,
-    _make_progress,
+    make_progress,
 )
 from src.core.pose_estimator import PoseEstimator
 from src.core.video_io import VideoWriter, frame_iterator, load_config, load_video
-from src.visualization.skeleton_overlay import render_skeleton, render_dynamic_hud
+from src.visualization.skeleton_overlay import (
+    compute_stress_colors,
+    render_skeleton,
+    render_dynamic_hud,
+)
 
 
 def main() -> None:
@@ -52,7 +56,12 @@ def main() -> None:
     estimator: PoseEstimator | None = None
 
     # Initialize stateful tracker for dynamic HUD events
-    angle_tracker = AngleTracker()
+    angles_cfg = config.get("overlay", {}).get("angles", {})
+    angle_tracker = AngleTracker(
+        history_length=angles_cfg.get("tracker_history_length", 15),
+        range_threshold=angles_cfg.get("tracker_range_threshold", 10.0),
+        stress_threshold=angles_cfg.get("tracker_stress_threshold", 90.0),
+    )
 
     try:
         estimator = PoseEstimator(config["pose"])
@@ -76,17 +85,11 @@ def main() -> None:
 
         skeleton_config = config.get("overlay", {}).get("skeleton", {})
         angles_config = config.get("overlay", {}).get("angles", {})
-        
-        efficient_range = angles_config.get("efficient_range", [150, 180])
-        warning_range = angles_config.get("warning_range", [90, 150])
-        efficient_color = tuple(angles_config.get("efficient_color", [60, 220, 60]))
-        warning_color = tuple(angles_config.get("warning_color", [0, 180, 255]))
-        error_color = tuple(angles_config.get("error_color", [20, 20, 240]))
 
         rendered_frames = 0
         detected_frames = 0
         total_confidence = 0.0
-        progress = _make_progress(metadata.total_frames, "Pass 2")
+        progress = make_progress(metadata.total_frames, "Pass 2")
 
         try:
             for frame_idx, timestamp, frame in frame_iterator(
@@ -106,24 +109,17 @@ def main() -> None:
                 if keypoints is not None:
                     if joint_angles is None:
                         try:
-                            joint_angles = compute_joint_angles(keypoints)
+                            joint_angles = compute_joint_angles(
+                                keypoints, min_visibility=0.3,
+                            )
                         except Exception:
                             joint_angles = None
 
                     if joint_angles:
                         events = angle_tracker.update(joint_angles)
-                        
-                        stress_colors = {}
-                        for joint_name, angle in joint_angles.items():
-                            if joint_name in JOINT_TRIPLETS:
-                                idx_center = JOINT_TRIPLETS[joint_name][1]
-                                if angle < warning_range[0]:
-                                    stress_colors[idx_center] = error_color
-                                elif angle < efficient_range[0]:
-                                    stress_colors[idx_center] = warning_color
-                                else:
-                                    stress_colors[idx_center] = efficient_color
-
+                        stress_colors = compute_stress_colors(
+                            joint_angles, JOINT_TRIPLETS, angles_config,
+                        )
                         annotated = render_skeleton(annotated, keypoints, skeleton_config, stress_colors=stress_colors)
                         annotated = render_dynamic_hud(annotated, events)
                     else:

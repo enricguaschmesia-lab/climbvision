@@ -118,7 +118,7 @@ def run_pose_pass(
 
     estimator.reset()
     iterator = frame_iterator(video_path, max_dimension=max_dimension)
-    progress = _make_progress(total_frames, "Pass 1")
+    progress = make_progress(total_frames, "Pass 1")
 
     try:
         reached_eof = _read_new_frames(
@@ -198,7 +198,7 @@ def run_pose_pass(
         progress.close()
 
 
-def _make_progress(total_frames: int, desc: str):
+def make_progress(total_frames: int, desc: str):
     """Create a tqdm progress bar or a lightweight fallback."""
     if tqdm is None:
         return _NullProgress()
@@ -278,7 +278,9 @@ def _commit_frames(
         joint_angles = None
         if keypoints is not None:
             try:
-                joint_angles = compute_joint_angles(keypoints)
+                joint_angles = compute_joint_angles(
+                    keypoints, min_visibility=0.3,
+                )
             except Exception:
                 joint_angles = None
 
