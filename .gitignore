@@ -26,6 +26,7 @@ docs/
 .claude/
 .gemini/
 .codex/
+CLAUDE.md
 
 # Temp files
 tmp/
