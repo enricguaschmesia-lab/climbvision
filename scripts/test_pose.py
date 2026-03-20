@@ -15,9 +15,15 @@ import cv2
 import numpy as np
 
 from src.core.video_io import load_video, frame_iterator, load_config, VideoWriter
+from src.core.pipeline_runner import (
+    compute_adaptive_smoothing_window,
+    run_pose_pass,
+)
 from src.core.pose_estimator import PoseEstimator
 from src.analysis.joint_angles import compute_joint_angles
 from src.visualization.skeleton_overlay import render_skeleton
+from src.visualization.angle_overlay import render_angles
+from src.visualization.hud_overlay import render_hud
 
 
 def _render_frame(
@@ -25,38 +31,46 @@ def _render_frame(
     kp: np.ndarray | None,
     conf: float,
     idx: int,
+    timestamp: float,
     skeleton_cfg: dict,
+    angles_cfg: dict,
+    hud_cfg: dict,
+    joint_angles: dict[str, float] | None = None,
 ) -> tuple[np.ndarray, bool]:
-    """Render skeleton overlay and angle text on a single frame.
+    """Render skeleton + angle arc overlays on a single frame.
 
     Args:
         frame: BGR image.
         kp: Keypoints array (33, 4) or None if no pose detected.
         conf: Overall confidence float.
         idx: Frame index for progress logging.
+        timestamp: Frame timestamp in seconds.
         skeleton_cfg: Skeleton overlay config dict.
+        angles_cfg: Angle overlay config dict.
+        hud_cfg: HUD overlay config dict.
+        joint_angles: Precomputed joint angles when available.
 
     Returns:
         Tuple of (annotated frame, whether pose was detected).
     """
+    display_frame = frame.copy()
+
     if kp is None:
+        display_frame = render_hud(display_frame, idx, timestamp, None, hud_cfg, angles_cfg)
         if idx % 30 == 0:
             print(f"  Frame {idx:4d} | NO POSE DETECTED")
-        return frame, False
+        return display_frame, False
 
-    display_frame = render_skeleton(frame, kp, skeleton_cfg)
+    if joint_angles is None:
+        joint_angles = compute_joint_angles(kp)
 
-    angles = compute_joint_angles(kp)
-    angle_strs = [f"{k}: {v:.0f}" for k, v in sorted(angles.items())]
-    for i, txt in enumerate(angle_strs):
-        cv2.putText(
-            display_frame, txt, (10, 20 + i * 18),
-            cv2.FONT_HERSHEY_SIMPLEX, 0.45, (255, 255, 255), 1, cv2.LINE_AA,
-        )
+    display_frame = render_skeleton(display_frame, kp, skeleton_cfg)
+    display_frame = render_angles(display_frame, kp, joint_angles, angles_cfg)
+    display_frame = render_hud(display_frame, idx, timestamp, joint_angles, hud_cfg, angles_cfg)
 
     if idx % 30 == 0:
         angle_summary = ", ".join(
-            f"{k}={v:.0f}" for k, v in angles.items()
+            f"{k}={v:.0f}" for k, v in joint_angles.items()
             if "elbow" in k or "knee" in k
         )
         print(f"  Frame {idx:4d} | conf={conf:.2f} | {angle_summary}")
@@ -88,6 +102,9 @@ def main() -> None:
     config = load_config("configs/default.yaml")
     estimator = PoseEstimator(config["pose"])
     skeleton_cfg = config["overlay"]["skeleton"]
+    angles_cfg = config["overlay"]["angles"]
+    hud_cfg = config["overlay"]["hud"]
+    smoothing_window = compute_adaptive_smoothing_window(meta.fps, config)
 
     # Optional video writer
     writer = None
@@ -119,7 +136,16 @@ def main() -> None:
 
             kp, conf = estimator.estimate_frame(frame)
             total += 1
-            display_frame, found = _render_frame(frame, kp, conf, idx, skeleton_cfg)
+            display_frame, found = _render_frame(
+                frame,
+                kp,
+                conf,
+                idx,
+                idx / meta.fps,
+                skeleton_cfg,
+                angles_cfg,
+                hud_cfg,
+            )
             if found:
                 detected += 1
 
@@ -131,37 +157,108 @@ def main() -> None:
                     break
     else:
         print("Processing with temporal smoothing...")
-        print("  Pass 1/2: Reading frames...")
-        frames: list[np.ndarray] = []
-        frame_indices: list[int] = []
+        effective_total_frames = args.max_frames if args.max_frames else meta.total_frames
+        use_chunked = effective_total_frames >= 2000 and args.max_frames == 0
 
-        for idx, _, frame in frame_iterator(
-            args.video, max_dimension=config["video"]["max_dimension"]
-        ):
-            if args.max_frames and idx >= args.max_frames:
-                break
-            frame_indices.append(idx)
-            frames.append(frame)
-            if idx % 100 == 0:
-                print(f"    Read {idx} frames...", end="\r")
+        if use_chunked:
+            print(f"  Using chunked Pass 1 ({smoothing_window=})...")
+            pose_frames = run_pose_pass(
+                video_path=args.video,
+                config=config,
+                estimator=estimator,
+                fps=meta.fps,
+                smoothing_window=smoothing_window,
+                total_frames=meta.total_frames,
+                max_dimension=config["video"]["max_dimension"],
+            )
 
-        print(f"    Read {len(frames)} frames. Running pose estimation + smoothing...")
-        keypoints_list, confidences = estimator.estimate_video(frames, fps=meta.fps)
-
-        print("  Pass 2/2: Rendering overlays...")
-        for idx, frame, kp, conf in zip(frame_indices, frames, keypoints_list, confidences):
-            total += 1
-            display_frame, found = _render_frame(frame, kp, conf, idx, skeleton_cfg)
-            if found:
-                detected += 1
-
-            if writer:
-                writer.write(display_frame)
-            if args.show:
-                cv2.imshow("ClimbVision - Pose Test", display_frame)
-                if cv2.waitKey(1) & 0xFF == ord("q"):
-                    quit_early = True
+            print("  Pass 2/2: Rendering overlays...")
+            for idx, timestamp, frame in frame_iterator(
+                args.video, max_dimension=config["video"]["max_dimension"]
+            ):
+                if args.max_frames and idx >= args.max_frames:
                     break
+
+                frame_data = pose_frames.get(idx)
+                kp = frame_data.keypoints if frame_data is not None else None
+                conf = frame_data.keypoint_confidence if frame_data is not None else 0.0
+                joint_angles = frame_data.joint_angles if frame_data is not None else None
+
+                total += 1
+                display_frame, found = _render_frame(
+                    frame,
+                    kp,
+                    conf,
+                    idx,
+                    timestamp,
+                    skeleton_cfg,
+                    angles_cfg,
+                    hud_cfg,
+                    joint_angles=joint_angles,
+                )
+                if found:
+                    detected += 1
+
+                if writer:
+                    writer.write(display_frame)
+                if args.show:
+                    cv2.imshow("ClimbVision - Pose Test", display_frame)
+                    if cv2.waitKey(1) & 0xFF == ord("q"):
+                        quit_early = True
+                        break
+        else:
+            print(f"  Using in-memory smoothing path ({smoothing_window=})...")
+            print("  Pass 1/2: Reading frames...")
+            frames: list[np.ndarray] = []
+            frame_indices: list[int] = []
+            timestamps: list[float] = []
+
+            for idx, timestamp, frame in frame_iterator(
+                args.video, max_dimension=config["video"]["max_dimension"]
+            ):
+                if args.max_frames and idx >= args.max_frames:
+                    break
+                frame_indices.append(idx)
+                timestamps.append(timestamp)
+                frames.append(frame)
+                if idx % 100 == 0:
+                    print(f"    Read {idx} frames...", end="\r")
+
+            print(f"    Read {len(frames)} frames. Running pose estimation + smoothing...")
+            raw_keypoints, confidences = estimator.detect_video_raw(frames, fps=meta.fps)
+            keypoints_list = estimator.postprocess_keypoints(
+                raw_keypoints, smoothing_window=smoothing_window,
+            )
+
+            print("  Pass 2/2: Rendering overlays...")
+            for idx, timestamp, frame, kp, conf in zip(
+                frame_indices,
+                timestamps,
+                frames,
+                keypoints_list,
+                confidences,
+            ):
+                total += 1
+                display_frame, found = _render_frame(
+                    frame,
+                    kp,
+                    conf,
+                    idx,
+                    timestamp,
+                    skeleton_cfg,
+                    angles_cfg,
+                    hud_cfg,
+                )
+                if found:
+                    detected += 1
+
+                if writer:
+                    writer.write(display_frame)
+                if args.show:
+                    cv2.imshow("ClimbVision - Pose Test", display_frame)
+                    if cv2.waitKey(1) & 0xFF == ord("q"):
+                        quit_early = True
+                        break
 
     if args.show:
         cv2.destroyAllWindows()

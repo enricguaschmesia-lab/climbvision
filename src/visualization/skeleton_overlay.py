@@ -2,7 +2,8 @@
 
 Draws pose skeleton lines and joint dots on video frames.
 Body regions (arms, legs, trunk) use distinct colors for clarity.
-Low-confidence joints are rendered with reduced opacity.
+Low-confidence joints are rendered with reduced opacity, and joints
+below the occlusion hide threshold are not drawn at all.
 
 All visual parameters are driven by configs/default.yaml.
 """
@@ -86,6 +87,9 @@ def render_skeleton(
             - low_confidence_threshold: float, visibility below this is
               considered low-confidence (defaults to min_confidence from
               pose config or 0.5)
+            - hide_threshold: float, visibility below this means the joint
+              is NOT drawn at all (occlusion-aware). Defaults to 0.0
+              (draw everything).
             - color: list[int], fallback BGR color if no region colors
             - region_colors: optional dict mapping region name to BGR list
 
@@ -98,6 +102,7 @@ def render_skeleton(
     joint_radius = config.get("joint_radius", 4)
     low_alpha = config.get("low_confidence_alpha", 0.3)
     low_threshold = config.get("low_confidence_threshold", 0.5)
+    hide_threshold = config.get("hide_threshold", 0.0)
     fallback_color = tuple(config.get("color", [0, 255, 128]))
     region_colors_cfg = config.get("region_colors", {})
 
@@ -111,9 +116,10 @@ def render_skeleton(
         else:
             region_colors[region] = fallback_color
 
-    # Pre-compute which landmarks are low-confidence
+    # Pre-compute visibility masks
     vis = keypoints[:, 3]
-    low_mask = vis < low_threshold
+    hidden_mask = vis < hide_threshold     # not drawn at all
+    low_mask = vis < low_threshold         # drawn faded (alpha blended)
 
     # --- Draw limb connections ---
     # We draw low-confidence connections on a separate overlay for alpha blending
@@ -122,6 +128,10 @@ def render_skeleton(
     for region, connections in SKELETON_CONNECTIONS.items():
         color = region_colors[region]
         for idx_a, idx_b in connections:
+            # Occlusion-aware: skip if EITHER endpoint is hidden
+            if hidden_mask[idx_a] or hidden_mask[idx_b]:
+                continue
+
             pt_a = _to_point(keypoints[idx_a])
             pt_b = _to_point(keypoints[idx_b])
             if pt_a is None or pt_b is None:
@@ -140,6 +150,10 @@ def render_skeleton(
     overlay_dots = output.copy()
 
     for idx in JOINT_LANDMARKS:
+        # Occlusion-aware: skip hidden joints entirely
+        if hidden_mask[idx]:
+            continue
+
         pt = _to_point(keypoints[idx])
         if pt is None:
             continue

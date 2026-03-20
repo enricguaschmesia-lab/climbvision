@@ -177,3 +177,78 @@ class TestRenderSkeleton:
         """JOINT_LANDMARKS should include all major joints."""
         for idx in [11, 12, 13, 14, 15, 16, 23, 24, 25, 26, 27, 28]:
             assert idx in JOINT_LANDMARKS
+
+
+# ---------------------------------------------------------------------------
+# Tests — occlusion-aware hiding
+# ---------------------------------------------------------------------------
+
+
+OCCLUSION_CONFIG: dict = {
+    **DEFAULT_CONFIG,
+    "hide_threshold": 0.25,
+    "low_confidence_threshold": 0.5,
+}
+
+
+class TestOcclusionAwareHiding:
+    """Tests for occlusion-aware joint hiding (hide_threshold)."""
+
+    def test_hidden_joints_not_drawn(self) -> None:
+        """Joints below hide_threshold produce less drawing than visible ones."""
+        frame = _make_frame()
+
+        # All visible
+        kp_visible = _make_visible_keypoints()
+        result_visible = render_skeleton(frame, kp_visible, OCCLUSION_CONFIG)
+
+        # Left arm joints hidden (below 0.25)
+        kp_hidden = _make_visible_keypoints()
+        kp_hidden[13, 3] = 0.1  # left_elbow
+        kp_hidden[15, 3] = 0.1  # left_wrist
+        result_hidden = render_skeleton(frame, kp_hidden, OCCLUSION_CONFIG)
+
+        # Hidden version should differ less from blank frame
+        diff_visible = np.sum(np.abs(result_visible.astype(int) - frame.astype(int)))
+        diff_hidden = np.sum(np.abs(result_hidden.astype(int) - frame.astype(int)))
+        assert diff_hidden < diff_visible
+
+    def test_all_hidden_draws_nothing(self) -> None:
+        """All joints below hide_threshold should produce minimal change."""
+        frame = _make_frame()
+        kp = _make_visible_keypoints()
+        kp[:, 3] = 0.1  # all below hide_threshold
+
+        result = render_skeleton(frame, kp, OCCLUSION_CONFIG)
+        # Alpha blending on empty overlays may cause tiny diffs; check near-identity
+        max_diff = np.max(np.abs(result.astype(int) - frame.astype(int)))
+        assert max_diff <= 1  # rounding only
+
+    def test_hide_threshold_zero_draws_everything(self) -> None:
+        """hide_threshold=0.0 should behave like the old code (draw all)."""
+        frame = _make_frame()
+        kp = _make_visible_keypoints()
+        kp[:, 3] = 0.01  # very low but > 0
+
+        config_no_hide = {**DEFAULT_CONFIG, "hide_threshold": 0.0}
+        result = render_skeleton(frame, kp, config_no_hide)
+        # Should still draw something even with very low visibility
+        assert not np.array_equal(result, frame)
+
+    def test_between_hide_and_low_is_faded(self) -> None:
+        """Joints between hide_threshold and low_confidence_threshold are faded."""
+        frame = _make_frame()
+
+        # Full visibility
+        kp_full = _make_visible_keypoints()
+        result_full = render_skeleton(frame, kp_full, OCCLUSION_CONFIG)
+
+        # Visibility at 0.35 (between hide=0.25 and low_conf=0.5)
+        kp_faded = _make_visible_keypoints()
+        kp_faded[:, 3] = 0.35
+        result_faded = render_skeleton(frame, kp_faded, OCCLUSION_CONFIG)
+
+        # Both should differ from blank, but faded should differ less
+        diff_full = np.sum(np.abs(result_full.astype(int) - frame.astype(int)))
+        diff_faded = np.sum(np.abs(result_faded.astype(int) - frame.astype(int)))
+        assert diff_faded < diff_full

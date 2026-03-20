@@ -78,17 +78,20 @@ class PoseEstimator:
                   ``data/models/pose_landmarker_heavy.task``.
                 - min_confidence: float, minimum mean visibility threshold
                 - smoothing: ``"savgol"`` | ``"none"``
-                - smoothing_window: int, Savitzky-Golay window length
+                - smoothing_window: int | None, Savitzky-Golay window length
+                - smoothing_window_seconds: float, adaptive smoothing span
                 - smoothing_polyorder: int, polynomial order
                 - max_interpolation_gap: int, max consecutive None frames to fill
         """
         self.config = config
         self.min_confidence: float = config.get("min_confidence", 0.5)
         self._smoothing_type: str = config.get("smoothing", "savgol")
-        self._smoothing_window: int = config.get("smoothing_window", 7)
+        self._smoothing_window: int | None = config.get("smoothing_window", 7)
+        self._smoothing_window_seconds: float = config.get("smoothing_window_seconds", 0.23)
         self._smoothing_polyorder: int = config.get("smoothing_polyorder", 2)
         self._max_gap: int = config.get("max_interpolation_gap", 5)
         self._frame_counter: int = 0
+        self._last_video_fps: float | None = None
 
         model_name = config.get("model", "mediapipe")
         if model_name != "mediapipe":
@@ -164,6 +167,34 @@ class PoseEstimator:
         Raises:
             ValueError: If fps is not positive.
         """
+        raw_keypoints, confidences = self.detect_video_raw(frames, fps)
+        smoothed = self.postprocess_keypoints(raw_keypoints)
+        return smoothed, confidences
+
+    def detect_video_raw(
+        self,
+        frames: list[np.ndarray],
+        fps: float,
+    ) -> tuple[list[np.ndarray | None], list[float]]:
+        """Run VIDEO-mode detection on frames without smoothing or interpolation.
+
+        This method keeps the MediaPipe VIDEO-mode tracker state and uses
+        absolute timestamps derived from the estimator's internal frame
+        counter. Detection failures are isolated to the offending frame and
+        returned as ``None`` with ``0.0`` confidence.
+
+        Args:
+            frames: List of BGR images as numpy arrays.
+            fps: Frames per second, used to compute absolute timestamps for
+                VIDEO-mode tracking. Must be positive.
+
+        Returns:
+            Tuple of ``(raw_keypoints, confidences)``. The keypoints are
+            unsmoothed raw detections and may contain ``None`` entries.
+
+        Raises:
+            ValueError: If fps is not positive.
+        """
         if not frames:
             return [], []
 
@@ -171,35 +202,60 @@ class PoseEstimator:
             raise ValueError(f"fps must be positive, got {fps}")
 
         mp = self._mp
+        self._last_video_fps = fps
 
-        # Step 1: Estimate each frame using VIDEO mode (has tracking)
         raw_keypoints: list[np.ndarray | None] = []
         confidences: list[float] = []
         for idx, frame in enumerate(frames):
-            frame_rgb = frame[:, :, ::-1].copy()
-            mp_image = mp.Image(image_format=mp.ImageFormat.SRGB, data=frame_rgb)
-            timestamp_ms = int((self._frame_counter + idx) * (1000.0 / fps))
-            result = self._video_landmarker.detect_for_video(mp_image, timestamp_ms)
-            kp, conf = self._parse_result(result, frame.shape[:2])
+            try:
+                frame_rgb = frame[:, :, ::-1].copy()
+                mp_image = mp.Image(image_format=mp.ImageFormat.SRGB, data=frame_rgb)
+                timestamp_ms = int((self._frame_counter + idx) * (1000.0 / fps))
+                result = self._video_landmarker.detect_for_video(mp_image, timestamp_ms)
+                kp, conf = self._parse_result(result, frame.shape[:2])
+            except Exception:
+                kp, conf = None, 0.0
+
             raw_keypoints.append(kp)
             confidences.append(conf)
 
         self._frame_counter += len(frames)
+        return raw_keypoints, confidences
 
-        # Step 2: Interpolate short gaps
+    def postprocess_keypoints(
+        self,
+        raw_keypoints: list[np.ndarray | None],
+        smoothing_window: int | None = None,
+    ) -> list[np.ndarray | None]:
+        """Apply interpolation and smoothing to raw VIDEO-mode detections.
+
+        Args:
+            raw_keypoints: Raw detections, possibly containing ``None`` gaps.
+            smoothing_window: Optional override for the Savitzky-Golay
+                smoothing window. If omitted, uses the estimator config or an
+                adaptive fallback derived from the last processed FPS.
+
+        Returns:
+            Postprocessed keypoints with short gaps interpolated and temporal
+            smoothing applied when enabled.
+        """
+        if not raw_keypoints:
+            return []
+
         interpolated = interpolate_gaps(raw_keypoints, max_gap=self._max_gap)
 
-        # Step 3: Apply temporal smoothing
-        if self._smoothing_type == "savgol":
-            smoothed = savgol_smooth_keypoints(
-                interpolated,
-                window=self._smoothing_window,
-                polyorder=self._smoothing_polyorder,
-            )
-        else:
-            smoothed = interpolated
+        if self._smoothing_type != "savgol":
+            return interpolated
 
-        return smoothed, confidences
+        resolved_window = smoothing_window
+        if resolved_window is None:
+            resolved_window = self._resolve_smoothing_window()
+
+        return savgol_smooth_keypoints(
+            interpolated,
+            window=resolved_window,
+            polyorder=self._smoothing_polyorder,
+        )
 
     def get_landmark_names(self) -> list[str]:
         """Return ordered list of landmark names matching keypoint indices.
@@ -221,6 +277,7 @@ class PoseEstimator:
         self._video_landmarker.close()
         self._video_landmarker = self._create_landmarker(running_mode.VIDEO)
         self._frame_counter = 0
+        self._last_video_fps = None
 
     def close(self) -> None:
         """Release MediaPipe resources.
@@ -293,3 +350,25 @@ class PoseEstimator:
                 min_tracking_confidence=self.min_confidence,
             )
         )
+
+    def _resolve_smoothing_window(self) -> int:
+        """Resolve the effective smoothing window for postprocessing.
+
+        Returns:
+            Odd Savitzky-Golay window length that satisfies the configured
+            polynomial order.
+        """
+        if self._smoothing_window is not None:
+            return self._smoothing_window
+
+        fps = self._last_video_fps if self._last_video_fps is not None else 30.0
+        requested = int(round(self._smoothing_window_seconds * fps))
+
+        min_valid = max(3, self._smoothing_polyorder + 1)
+        if min_valid % 2 == 0:
+            min_valid += 1
+
+        resolved = max(requested, min_valid)
+        if resolved % 2 == 0:
+            resolved += 1
+        return resolved

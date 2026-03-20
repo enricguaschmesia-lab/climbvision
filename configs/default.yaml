@@ -6,10 +6,13 @@ pose:
   model_path: "data/models/pose_landmarker_heavy.task"  # MediaPipe Tasks API model
   min_confidence: 0.5                   # Frames below this are flagged
   smoothing: "savgol"                   # "savgol" | "kalman" | "none"
-  smoothing_window: 7                   # Savitzky-Golay window (must be odd). Manual override; see smoothing_window_seconds.
+  smoothing_window: null                # null = adaptive (from smoothing_window_seconds × fps). Set to odd int for manual override.
   smoothing_window_seconds: 0.23        # Auto-compute window from FPS (0.23s ≈ 7 frames at 30fps). Ignored if smoothing_window is set explicitly.
   smoothing_polyorder: 2                # Savitzky-Golay polynomial order
   max_interpolation_gap: 5              # Max consecutive missing frames to interpolate
+
+pipeline:
+  chunk_size_frames: 300                # Frames per chunk in Pass 1. Increase for faster processing, decrease for less memory.
 
 holds:
   detection_method: "yolo"              # "yolo" | "color" | "manual"
@@ -51,13 +54,19 @@ overlay:
     low_confidence_threshold: 0.5       # Visibility below this is rendered faded
     hide_threshold: 0.25                # Visibility below this: joint is NOT drawn at all (occlusion-aware)
   angles:
-    arc_radius: 30
-    font_scale: 0.4
-    efficient_color: [0, 200, 0]       # BGR: green
-    warning_color: [0, 200, 255]       # BGR: yellow
-    error_color: [0, 0, 255]           # BGR: red
-    efficient_range: [150, 180]        # degrees (for elbow at rest)
-    warning_range: [90, 150]
+    arc_radius: 45                     # Default arc radius (px at 1080p)
+    radius_hips: 65                    # Larger radius for hips to avoid knee overlap
+    thickness: 3                       # Arc line thickness (1px more than skeleton)
+    font_scale: 0.55                   # Degree label font scale
+    alpha: 0.75                        # Arc opacity (0-1)
+    fill_alpha: 0.1                    # Sector fill opacity (light "pie slice")
+    label_offset: 18                   # Label distance from arc path (px)
+    hide_threshold: 0.25               # Skip arcs for joints below this visibility
+    efficient_color: [60, 220, 60]     # BGR: neon green (high contrast on gym walls)
+    warning_color: [0, 180, 255]       # BGR: golden amber
+    error_color: [20, 20, 240]         # BGR: vivid red
+    efficient_range: [150, 180]        # degrees — efficient (e.g. straight arm)
+    warning_range: [90, 150]           # degrees — suboptimal
   com:
     dot_radius: 8
     dot_color: [0, 180, 255]           # BGR: orange

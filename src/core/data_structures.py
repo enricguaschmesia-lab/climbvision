@@ -68,11 +68,13 @@ class FrameData:
     """Per-frame data assembled by the pipeline."""
     frame_idx: int
     timestamp: float                    # seconds from start
-    image: np.ndarray                   # Raw BGR frame (H, W, 3)
+    image: np.ndarray | None            # Raw BGR frame (H, W, 3); None during Pass 1 storage
     keypoints: np.ndarray | None        # (33, 4) — x, y, z, confidence; None if detection failed
     keypoint_confidence: float          # Mean visibility across all landmarks
     holds: list[HoldDetection] | None   # All detected holds (from reference frame)
     route_holds: list[HoldDetection] | None  # Filtered to target route
+    # Phase 1 convenience — will migrate to PoseAnalysis in Phase 3+
+    joint_angles: dict[str, float] | None = None
 
 
 @dataclass
