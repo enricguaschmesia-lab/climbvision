@@ -20,10 +20,8 @@ from src.core.pipeline_runner import (
     run_pose_pass,
 )
 from src.core.pose_estimator import PoseEstimator
-from src.analysis.joint_angles import compute_joint_angles
-from src.visualization.skeleton_overlay import render_skeleton
-from src.visualization.angle_overlay import render_angles
-from src.visualization.hud_overlay import render_hud
+from src.analysis.joint_angles import compute_joint_angles, AngleTracker, JOINT_TRIPLETS
+from src.visualization.skeleton_overlay import render_skeleton, render_dynamic_hud
 
 
 def _render_frame(
@@ -34,10 +32,10 @@ def _render_frame(
     timestamp: float,
     skeleton_cfg: dict,
     angles_cfg: dict,
-    hud_cfg: dict,
+    angle_tracker: AngleTracker,
     joint_angles: dict[str, float] | None = None,
 ) -> tuple[np.ndarray, bool]:
-    """Render skeleton + angle arc overlays on a single frame.
+    """Render sleek, minimalist skeleton + dynamic HUD on a single frame.
 
     Args:
         frame: BGR image.
@@ -47,7 +45,7 @@ def _render_frame(
         timestamp: Frame timestamp in seconds.
         skeleton_cfg: Skeleton overlay config dict.
         angles_cfg: Angle overlay config dict.
-        hud_cfg: HUD overlay config dict.
+        angle_tracker: Tracks joint angle history to emit events.
         joint_angles: Precomputed joint angles when available.
 
     Returns:
@@ -56,7 +54,6 @@ def _render_frame(
     display_frame = frame.copy()
 
     if kp is None:
-        display_frame = render_hud(display_frame, idx, timestamp, None, hud_cfg, angles_cfg)
         if idx % 30 == 0:
             print(f"  Frame {idx:4d} | NO POSE DETECTED")
         return display_frame, False
@@ -64,9 +61,30 @@ def _render_frame(
     if joint_angles is None:
         joint_angles = compute_joint_angles(kp)
 
-    display_frame = render_skeleton(display_frame, kp, skeleton_cfg)
-    display_frame = render_angles(display_frame, kp, joint_angles, angles_cfg)
-    display_frame = render_hud(display_frame, idx, timestamp, joint_angles, hud_cfg, angles_cfg)
+    events = angle_tracker.update(joint_angles)
+
+    stress_colors = {}
+    efficient_range = angles_cfg.get("efficient_range", [150, 180])
+    warning_range = angles_cfg.get("warning_range", [90, 150])
+    efficient_color = tuple(angles_cfg.get("efficient_color", [60, 220, 60]))
+    warning_color = tuple(angles_cfg.get("warning_color", [0, 180, 255]))
+    error_color = tuple(angles_cfg.get("error_color", [20, 20, 240]))
+    
+    for joint_name, angle in joint_angles.items():
+        if joint_name in JOINT_TRIPLETS:
+            idx_center = JOINT_TRIPLETS[joint_name][1]
+            if angle < warning_range[0]:
+                stress_colors[idx_center] = error_color
+            elif angle < efficient_range[0]:
+                stress_colors[idx_center] = warning_color
+            else:
+                stress_colors[idx_center] = efficient_color
+
+    display_frame = render_skeleton(display_frame, kp, skeleton_cfg, stress_colors=stress_colors)
+    display_frame = render_dynamic_hud(display_frame, events)
+
+    # Optional minimal debug text (timestamp/frame) can be added here if needed, 
+    # but per the spec we remove the large HUD box.
 
     if idx % 30 == 0:
         angle_summary = ", ".join(
@@ -101,10 +119,12 @@ def main() -> None:
     # Load config and init pose estimator
     config = load_config("configs/default.yaml")
     estimator = PoseEstimator(config["pose"])
-    skeleton_cfg = config["overlay"]["skeleton"]
-    angles_cfg = config["overlay"]["angles"]
-    hud_cfg = config["overlay"]["hud"]
+    skeleton_cfg = config.get("overlay", {}).get("skeleton", {})
+    angles_cfg = config.get("overlay", {}).get("angles", {})
     smoothing_window = compute_adaptive_smoothing_window(meta.fps, config)
+
+    # Initialize stateful tracker for dynamic HUD events
+    angle_tracker = AngleTracker()
 
     # Optional video writer
     writer = None
@@ -144,7 +164,7 @@ def main() -> None:
                 idx / meta.fps,
                 skeleton_cfg,
                 angles_cfg,
-                hud_cfg,
+                angle_tracker,
             )
             if found:
                 detected += 1
@@ -193,7 +213,7 @@ def main() -> None:
                     timestamp,
                     skeleton_cfg,
                     angles_cfg,
-                    hud_cfg,
+                    angle_tracker,
                     joint_angles=joint_angles,
                 )
                 if found:
@@ -247,7 +267,7 @@ def main() -> None:
                     timestamp,
                     skeleton_cfg,
                     angles_cfg,
-                    hud_cfg,
+                    angle_tracker,
                 )
                 if found:
                     detected += 1

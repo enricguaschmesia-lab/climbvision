@@ -69,6 +69,7 @@ def render_skeleton(
     frame: np.ndarray,
     keypoints: np.ndarray,
     config: dict,
+    stress_colors: dict[int, tuple[int, int, int]] | None = None,
 ) -> np.ndarray:
     """Draw skeleton lines and joint dots on a video frame.
 
@@ -92,10 +93,15 @@ def render_skeleton(
               (draw everything).
             - color: list[int], fallback BGR color if no region colors
             - region_colors: optional dict mapping region name to BGR list
+        stress_colors: optional dict mapping landmark index to a BGR color tuple
+            for rendering stressed joints.
 
     Returns:
         A new frame with the skeleton overlay drawn.
     """
+    if stress_colors is None:
+        stress_colors = {}
+        
     output = frame.copy()
 
     thickness = config.get("thickness", 2)
@@ -159,16 +165,76 @@ def render_skeleton(
             continue
 
         # Joint dot color: white fill with a thin region-based outline
+        # Or stress color if provided
+        dot_color = stress_colors.get(idx, (255, 255, 255))
+        
         if low_mask[idx]:
-            cv2.circle(overlay_dots, pt, joint_radius, (255, 255, 255), -1, cv2.LINE_AA)
+            cv2.circle(overlay_dots, pt, joint_radius, dot_color, -1, cv2.LINE_AA)
         else:
-            cv2.circle(output, pt, joint_radius, (255, 255, 255), -1, cv2.LINE_AA)
+            cv2.circle(output, pt, joint_radius, dot_color, -1, cv2.LINE_AA)
             cv2.circle(output, pt, joint_radius, (80, 80, 80), 1, cv2.LINE_AA)
 
     # Blend low-confidence dots
     cv2.addWeighted(overlay_dots, low_alpha, output, 1 - low_alpha, 0, output)
 
     return output
+
+
+def render_dynamic_hud(
+    frame: np.ndarray,
+    events: list[dict],
+) -> np.ndarray:
+    """Draw sleek, non-intrusive 'pills' for significant events.
+    
+    Args:
+        frame: BGR image to draw on.
+        events: List of event dictionaries containing 'joint', 'angle', 'type'.
+    
+    Returns:
+        Frame with dynamic HUD elements.
+    """
+    if not events:
+        return frame
+        
+    output = frame.copy()
+    
+    # Starting position for pills (bottom left)
+    start_x = 30
+    start_y = frame.shape[0] - 50
+    pill_spacing = 40
+    
+    for i, event in enumerate(events):
+        joint_name = event["joint"].replace("_", " ").title()
+        angle = event["angle"]
+        text = f"{joint_name} Lock: {angle:.0f} deg"
+        
+        font = cv2.FONT_HERSHEY_SIMPLEX
+        font_scale = 0.5
+        thickness = 1
+        
+        (text_w, text_h), baseline = cv2.getTextSize(text, font, font_scale, thickness)
+        
+        pill_x1 = start_x
+        pill_y1 = start_y - i * pill_spacing - text_h - 10
+        pill_x2 = start_x + text_w + 20
+        pill_y2 = start_y - i * pill_spacing + 10
+        
+        # Draw pill background (dark gray, rounded via rectangle)
+        cv2.rectangle(output, (pill_x1, pill_y1), (pill_x2, pill_y2), (40, 40, 40), -1)
+        # Draw border
+        cv2.rectangle(output, (pill_x1, pill_y1), (pill_x2, pill_y2), (100, 100, 100), 1)
+        
+        # Draw text
+        text_x = pill_x1 + 10
+        text_y = pill_y2 - 10 - baseline // 2
+        cv2.putText(output, text, (text_x, text_y), font, font_scale, (255, 255, 255), thickness, cv2.LINE_AA)
+        
+    # Alpha blend the HUD slightly
+    alpha = 0.85
+    result = frame.copy()
+    cv2.addWeighted(output, alpha, result, 1 - alpha, 0, result)
+    
+    return result
 
 
 def _to_point(landmark: np.ndarray) -> tuple[int, int] | None:

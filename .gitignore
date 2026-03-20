@@ -48,7 +48,6 @@ data/samples/
 *.MKV
 *.webm
 *.WEBM
-*.png
 
 # Output
 output/

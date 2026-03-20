@@ -87,3 +87,63 @@ def compute_joint_angles(
         angles[joint_name] = angle
 
     return angles
+
+
+class AngleTracker:
+    """Tracks joint angles over a short history to detect significant events.
+    
+    An event is defined as either:
+    1. A joint held in a stressful position (e.g., acute angle) for a minimum duration.
+    2. A joint hitting an extreme angle.
+    """
+    
+    def __init__(self, history_length: int = 15, variance_threshold: float = 10.0, stress_threshold: float = 90.0):
+        """
+        Args:
+            history_length: Number of frames to track.
+            variance_threshold: Max allowed variance (in degrees) to be considered 'holding' a position.
+            stress_threshold: Angle below which the joint is considered 'under stress' (e.g. tight lock-off).
+        """
+        self.history_length = history_length
+        self.variance_threshold = variance_threshold
+        self.stress_threshold = stress_threshold
+        self.history: dict[str, list[float]] = {}
+        
+    def update(self, angles: dict[str, float]) -> list[dict]:
+        """Update angle history and return any active events.
+        
+        Returns:
+            A list of event dictionaries, e.g. [{"joint": "left_elbow", "angle": 45.2, "type": "hold"}]
+        """
+        events = []
+        
+        # Clear history for joints that are no longer visible to avoid temporal teleportation
+        missing_joints = [j for j in self.history if j not in angles]
+        for j in missing_joints:
+            self.history[j].clear()
+
+        for joint, angle in angles.items():
+            if joint not in self.history:
+                self.history[joint] = []
+                
+            self.history[joint].append(angle)
+            if len(self.history[joint]) > self.history_length:
+                self.history[joint].pop(0)
+                
+            # Check for hold event
+            if len(self.history[joint]) == self.history_length:
+                arr = np.array(self.history[joint])
+                mean_angle = float(np.mean(arr))
+                # Max-min variance proxy
+                ptp = float(np.ptp(arr))
+                
+                # If variance is low and the angle is stressful
+                if ptp <= self.variance_threshold and mean_angle <= self.stress_threshold:
+                    events.append({
+                        "joint": joint,
+                        "angle": mean_angle,
+                        "type": "hold"
+                    })
+                    
+        return events
+
